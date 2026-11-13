@@ -1,4 +1,4 @@
-name: CI
+name: Go CI
 
 on:
   push:
@@ -6,28 +6,32 @@ on:
   pull_request:
     branches: [main]
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
+permissions:
+  contents: read
 
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: provision
+          POSTGRES_USER: provision
+          POSTGRES_PASSWORD: local-only-change-me
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U provision -d provision"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://provision:local-only-change-me@localhost:5432/provision?sslmode=disable
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-go@v5
         with:
-          node-version: 20
-
-      # Uncomment and adjust the steps below to match your project's setup
-
-      # - name: Install dependencies
-      #   run: npm ci
-
-      # - name: Lint
-      #   run: npm run lint
-
-      # - name: Run tests
-      #   run: npm test
-
-      # - name: Build
-      #   run: npm run build
+          go-version-file: go.mod
+          cache: true
+      - run: test -z "$(gofmt -l $(find . -name '*.go' -not -path './vendor/*'))"
+      - run: go vet ./...
+      - run: go test -race ./...
+      - run: go build ./cmd/server ./cmd/provisionctl

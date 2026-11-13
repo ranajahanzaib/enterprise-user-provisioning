@@ -1,0 +1,30 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: provision
+      POSTGRES_USER: provision
+      POSTGRES_PASSWORD: local-only-change-me
+    ports: ["5432:5432"]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U provision -d provision"]
+      interval: 3s
+      timeout: 3s
+      retries: 15
+  server:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://provision:local-only-change-me@postgres:5432/provision?sslmode=disable
+      TOKEN_HASH_SECRET: ${TOKEN_HASH_SECRET:?Set TOKEN_HASH_SECRET in .env}
+      OIDC_CONFIG_KEY: ${OIDC_CONFIG_KEY:?Set OIDC_CONFIG_KEY in .env}
+      DEV_MODE: "true"
+      COOKIE_SECURE: "false"
+      PUBLIC_BASE_URL: http://localhost:8080
+    ports: ["8080:8080"]
+volumes:
+  postgres-data:
