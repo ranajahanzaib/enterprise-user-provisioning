@@ -607,7 +607,7 @@ func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request, t, id strin
 			h.fail(w, 500, "unable to remove memberships", "", 500)
 			return
 		}
-		if _, e = tx.Exec(r.Context(), `INSERT INTO audit_events(tenant_id,actor_type,action,resource_type,resource_id,details) VALUES($1,'scim','membership.removed','group',$2,jsonb_build_object('user_id',$3))`, t, groupID, id); e != nil {
+		if _, e = tx.Exec(r.Context(), `INSERT INTO audit_events(tenant_id,actor_type,action,resource_type,resource_id,details) VALUES($1,'scim','membership.removed','group',$2,jsonb_build_object('user_id',$3::text))`, t, groupID, id); e != nil {
 			rows.Close()
 			h.fail(w, 500, "unable to record audit event", "", 500)
 			return
@@ -710,7 +710,7 @@ func (h *Handler) groups(w http.ResponseWriter, r *http.Request, t string, p []s
 				return
 			}
 			for uid := range members {
-				if _, e = tx.Exec(r.Context(), `INSERT INTO audit_events(tenant_id,actor_type,action,resource_type,resource_id,details) VALUES($1,'scim','membership.removed','group',$2,jsonb_build_object('user_id',$3))`, t, p[0], uid); e != nil {
+				if _, e = tx.Exec(r.Context(), `INSERT INTO audit_events(tenant_id,actor_type,action,resource_type,resource_id,details) VALUES($1,'scim','membership.removed','group',$2,jsonb_build_object('user_id',$3::text))`, t, p[0], uid); e != nil {
 					h.fail(w, 500, "unable to record audit event", "", 500)
 					return
 				}
@@ -782,7 +782,7 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request, t string) 
 			h.fail(w, 400, "invalid group member", "invalidValue", 400)
 			return
 		}
-		if _, e = tx.Exec(r.Context(), `INSERT INTO audit_events(tenant_id,actor_type,action,resource_type,resource_id,details) VALUES($1,'scim','membership.added','group',$2,jsonb_build_object('user_id',$3))`, t, g.ID, m.Value); e != nil {
+		if _, e = tx.Exec(r.Context(), `INSERT INTO audit_events(tenant_id,actor_type,action,resource_type,resource_id,details) VALUES($1,'scim','membership.added','group',$2,jsonb_build_object('user_id',$3::text))`, t, g.ID, m.Value); e != nil {
 			h.fail(w, 500, "unable to record audit event", "", 500)
 			return
 		}
@@ -1468,14 +1468,14 @@ func recordMembershipDiff(ctx context.Context, tx pgx.Tx, tenant, group string, 
 	}
 	for uid := range after {
 		if !before[uid] {
-			if _, e = tx.Exec(ctx, `INSERT INTO audit_events(tenant_id,actor_type,action,resource_type,resource_id,details) VALUES($1,'scim','membership.added','group',$2,jsonb_build_object('user_id',$3))`, tenant, group, uid); e != nil {
+			if _, e = tx.Exec(ctx, `INSERT INTO audit_events(tenant_id,actor_type,action,resource_type,resource_id,details) VALUES($1,'scim','membership.added','group',$2,jsonb_build_object('user_id',$3::text))`, tenant, group, uid); e != nil {
 				return false
 			}
 		}
 	}
 	for uid := range before {
 		if !after[uid] {
-			if _, e = tx.Exec(ctx, `INSERT INTO audit_events(tenant_id,actor_type,action,resource_type,resource_id,details) VALUES($1,'scim','membership.removed','group',$2,jsonb_build_object('user_id',$3))`, tenant, group, uid); e != nil {
+			if _, e = tx.Exec(ctx, `INSERT INTO audit_events(tenant_id,actor_type,action,resource_type,resource_id,details) VALUES($1,'scim','membership.removed','group',$2,jsonb_build_object('user_id',$3::text))`, tenant, group, uid); e != nil {
 				return false
 			}
 		}
