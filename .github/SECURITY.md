@@ -4,6 +4,6 @@
 
 Please do not report security vulnerabilities through public GitHub issues.
 
-Instead, report them via GitHub's private [Security Advisories](../../security/advisories/new) feature. Include as much detail as possible: a description of the issue, steps to reproduce, and potential impact.
+Instead, report them through the repository's [private Security Advisories](https://github.com/ranajahanzaib/enterprise-user-provisioning/security/advisories/new) page. Include the affected version, steps to reproduce, potential impact, and any suggested mitigation.
 
-You can expect an acknowledgment within 48 hours and a resolution timeline once the issue is confirmed.
+Avoid including credentials or personal data that are not necessary to investigate the report. Response and remediation times depend on severity and maintainer availability; no fixed service-level agreement is provided.
