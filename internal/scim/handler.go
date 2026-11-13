@@ -396,6 +396,7 @@ func (h *Handler) replaceUser(w http.ResponseWriter, r *http.Request, t, id stri
 }
 func (h *Handler) patchUser(w http.ResponseWriter, r *http.Request, t, id string) {
 	var body struct {
+		Schemas    []string `json:"schemas"`
 		Operations []struct {
 			Op    string          `json:"op"`
 			Path  string          `json:"path"`
@@ -945,6 +946,7 @@ func (h *Handler) listGroups(w http.ResponseWriter, r *http.Request, t string) {
 }
 func (h *Handler) patchGroup(w http.ResponseWriter, r *http.Request, t, id string) {
 	var b struct {
+		Schemas    []string `json:"schemas"`
 		Operations []struct {
 			Op, Path string
 			Value    json.RawMessage `json:"value"`
