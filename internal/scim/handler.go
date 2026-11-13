@@ -601,6 +601,7 @@ func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request, t, id strin
 		h.fail(w, 500, "unable to remove memberships", "", 500)
 		return
 	}
+	var groupIDs []string
 	for rows.Next() {
 		var groupID string
 		if e = rows.Scan(&groupID); e != nil {
@@ -608,11 +609,7 @@ func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request, t, id strin
 			h.fail(w, 500, "unable to remove memberships", "", 500)
 			return
 		}
-		if _, e = tx.Exec(r.Context(), `INSERT INTO audit_events(tenant_id,actor_type,action,resource_type,resource_id,details) VALUES($1,'scim','membership.removed','group',$2,jsonb_build_object('user_id',$3::text))`, t, groupID, id); e != nil {
-			rows.Close()
-			h.fail(w, 500, "unable to record audit event", "", 500)
-			return
-		}
+		groupIDs = append(groupIDs, groupID)
 	}
 	if e = rows.Err(); e != nil {
 		rows.Close()
@@ -620,6 +617,12 @@ func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request, t, id strin
 		return
 	}
 	rows.Close()
+	for _, groupID := range groupIDs {
+		if _, e = tx.Exec(r.Context(), `INSERT INTO audit_events(tenant_id,actor_type,action,resource_type,resource_id,details) VALUES($1,'scim','membership.removed','group',$2,jsonb_build_object('user_id',$3::text))`, t, groupID, id); e != nil {
+			h.fail(w, 500, "unable to record audit event", "", 500)
+			return
+		}
+	}
 	if _, e = tx.Exec(r.Context(), `INSERT INTO audit_events(tenant_id,actor_type,action,resource_type,resource_id) VALUES($1,'scim','user.deleted','user',$2)`, t, id); e != nil {
 		h.fail(w, 500, "unable to record audit event", "", 500)
 		return
