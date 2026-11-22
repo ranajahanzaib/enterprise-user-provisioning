@@ -40,8 +40,8 @@ func TestSCIMTenantLifecycle(t *testing.T) {
 	t.Setenv("TOKEN_HASH_SECRET", string(secret))
 	tenantA := newTenant(t, db, "north")
 	tenantB := newTenant(t, db, "harbor")
-	tokenA := "eup_integration-northstar"
-	tokenB := "eup_integration-harbor"
+	tokenA := fmt.Sprintf("eup_%s_north", tenantA[:12])
+	tokenB := fmt.Sprintf("eup_%s_harbor", tenantB[:12])
 	newToken(t, db, tenantA, tokenA, secret)
 	newToken(t, db, tenantB, tokenB, secret)
 	h := New(db, "http://localhost:8080")

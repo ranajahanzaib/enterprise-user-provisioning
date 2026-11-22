@@ -54,7 +54,9 @@ func main() {
 		for rows.Next() {
 			var id, name string
 			var active bool
-			_ = rows.Scan(&id, &name, &active)
+			if e = rows.Scan(&id, &name, &active); e != nil {
+				fatal(e)
+			}
 			fmt.Printf("%s\t%s\tactive=%t\n", id, name, active)
 		}
 	case "token create":
@@ -74,7 +76,7 @@ func main() {
 		if e != nil {
 			fatal(fmt.Errorf("token not found or unable to revoke"))
 		}
-		if _, e = tx.Exec(ctx, `INSERT INTO audit_events(tenant_id,actor_type,action,details) VALUES($1,'admin_cli','token.revoked',jsonb_build_object('integration',$2))`, tenant, name); e != nil {
+		if _, e = tx.Exec(ctx, `INSERT INTO audit_events(tenant_id,actor_type,action,details) VALUES($1,'admin_cli','token.revoked',jsonb_build_object('integration',$2::text))`, tenant, name); e != nil {
 			fatal(e)
 		}
 		if e = tx.Commit(ctx); e != nil {
@@ -98,7 +100,9 @@ func main() {
 		for rows.Next() {
 			var id, name, ext string
 			var active bool
-			_ = rows.Scan(&id, &name, &active, &ext)
+			if e = rows.Scan(&id, &name, &active, &ext); e != nil {
+				fatal(e)
+			}
 			fmt.Printf("%s\t%s\tactive=%t\texternalId=%s\n", id, name, active, ext)
 		}
 	case "groups list":
@@ -110,7 +114,9 @@ func main() {
 		defer rows.Close()
 		for rows.Next() {
 			var id, name string
-			_ = rows.Scan(&id, &name)
+			if e = rows.Scan(&id, &name); e != nil {
+				fatal(e)
+			}
 			fmt.Printf("%s\t%s\n", id, name)
 		}
 	case "roles seed":
@@ -123,7 +129,7 @@ func main() {
 			fatal(e)
 		}
 		if mapped.RowsAffected() > 0 {
-			if _, e = db.Exec(ctx, `INSERT INTO audit_events(tenant_id,actor_type,action,resource_type,resource_id,details) VALUES($1,'admin_cli','role_mapping.created','group',$2,jsonb_build_object('role_id',$3))`, a[2], a[3], a[4]); e != nil {
+			if _, e = db.Exec(ctx, `INSERT INTO audit_events(tenant_id,actor_type,action,resource_type,resource_id,details) VALUES($1,'admin_cli','role_mapping.created','group',$2,jsonb_build_object('role_id',$3::text))`, a[2], a[3], a[4]); e != nil {
 				fatal(e)
 			}
 		}
@@ -135,7 +141,7 @@ func main() {
 			fatal(e)
 		}
 		if removed.RowsAffected() > 0 {
-			if _, e = db.Exec(ctx, `INSERT INTO audit_events(tenant_id,actor_type,action,resource_type,resource_id,details) VALUES($1,'admin_cli','role_mapping.deleted','group',$2,jsonb_build_object('role_id',$3))`, a[2], a[3], a[4]); e != nil {
+			if _, e = db.Exec(ctx, `INSERT INTO audit_events(tenant_id,actor_type,action,resource_type,resource_id,details) VALUES($1,'admin_cli','role_mapping.deleted','group',$2,jsonb_build_object('role_id',$3::text))`, a[2], a[3], a[4]); e != nil {
 				fatal(e)
 			}
 		}
@@ -149,7 +155,9 @@ func main() {
 		defer rows.Close()
 		for rows.Next() {
 			var id, description, permissions string
-			_ = rows.Scan(&id, &description, &permissions)
+			if e = rows.Scan(&id, &description, &permissions); e != nil {
+				fatal(e)
+			}
 			fmt.Printf("%s\t%s\t%s\n", id, description, permissions)
 		}
 	case "audit list":
@@ -160,9 +168,12 @@ func main() {
 		}
 		defer rows.Close()
 		for rows.Next() {
-			var at, action, typ, id, outcome string
-			_ = rows.Scan(&at, &action, &typ, &id, &outcome)
-			fmt.Printf("%s\t%s\t%s\t%s\t%s\n", at, action, typ, id, outcome)
+			var at time.Time
+			var action, typ, id, outcome string
+			if e = rows.Scan(&at, &action, &typ, &id, &outcome); e != nil {
+				fatal(e)
+			}
+			fmt.Printf("%s\t%s\t%s\t%s\t%s\n", at.Format(time.RFC3339), action, typ, id, outcome)
 		}
 	case "demo run":
 		need(a, 3)
@@ -192,7 +203,7 @@ func tokenCommand(ctx context.Context, db *pgxpool.Pool, a []string) {
 	if e != nil {
 		fatal(e)
 	}
-	_, _ = db.Exec(ctx, `INSERT INTO audit_events(tenant_id,actor_type,action,details) VALUES($1,'admin_cli','token.created',jsonb_build_object('integration',$2,'prefix',$3))`, a[2], name, prefix)
+	_, _ = db.Exec(ctx, `INSERT INTO audit_events(tenant_id,actor_type,action,details) VALUES($1,'admin_cli','token.created',jsonb_build_object('integration',$2::text,'prefix',$3::text))`, a[2], name, prefix)
 	fmt.Println("Provisioning token (shown once):")
 	fmt.Println(token)
 }
@@ -205,7 +216,9 @@ func tokenList(ctx context.Context, db *pgxpool.Pool) {
 	for rows.Next() {
 		var id, name, prefix string
 		var used, expires, revoked *time.Time
-		_ = rows.Scan(&id, &name, &prefix, &used, &expires, &revoked)
+		if e = rows.Scan(&id, &name, &prefix, &used, &expires, &revoked); e != nil {
+			fatal(e)
+		}
 		fmt.Printf("%s\t%s\tprefix=%s\tlast_used=%v\texpires=%v\trevoked=%v\n", id, name, prefix, used, expires, revoked)
 	}
 }
@@ -234,7 +247,7 @@ func rotateToken(ctx context.Context, db *pgxpool.Pool, id string) {
 	if _, e = tx.Exec(ctx, `INSERT INTO provisioning_tokens(tenant_id,integration_name,token_prefix,token_hash,expires_at) VALUES($1,$2,$3,$4,now()+interval '90 days')`, tenant, name, p, hex.EncodeToString(mac.Sum(nil))); e != nil {
 		fatal(e)
 	}
-	if _, e = tx.Exec(ctx, `INSERT INTO audit_events(tenant_id,actor_type,action,details) VALUES($1,'admin_cli','token.rotated',jsonb_build_object('integration',$2,'prefix',$3))`, tenant, name, p); e != nil {
+	if _, e = tx.Exec(ctx, `INSERT INTO audit_events(tenant_id,actor_type,action,details) VALUES($1,'admin_cli','token.rotated',jsonb_build_object('integration',$2::text,'prefix',$3::text))`, tenant, name, p); e != nil {
 		fatal(e)
 	}
 	if e = tx.Commit(ctx); e != nil {
