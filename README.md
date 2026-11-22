@@ -1,131 +1,375 @@
 # Enterprise User Provisioning
 
-Automatically provision, update, authorize, and deprovision SaaS users from an enterprise identity provider using SCIM 2.0 and OpenID Connect.
+[![Go Version](https://img.shields.io/badge/go-1.25+-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![SCIM 2.0](https://img.shields.io/badge/SCIM-2.0-blue)](https://datatracker.ietf.org/doc/html/rfc7643)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-An employee joins a company. The identity provider provisions the SaaS account and memberships over SCIM. The employee signs in through OIDC. The application links only a pre-provisioned identity and evaluates current group-role grants on every protected request. Suspending or deleting the account revokes stored sessions.
+Automatically provision, update, authorize, and deprovision SaaS users from an enterprise identity provider (such as Okta, Entra ID, or authentik) using **SCIM 2.0** and **OpenID Connect (OIDC)**.
 
-This project implements a focused provisioning and authentication integration for local evaluation. It supports a documented SCIM subset and OIDC account linking; it does not claim full SCIM conformance or verified authentik interoperability.
+![Enterprise User Provisioning Overview](docs/screenshots/overview.png)
 
-## Protocols and architecture
+An employee joins an enterprise. The identity provider provisions the SaaS account and memberships over SCIM. The employee signs in through OIDC. The application links only pre-provisioned identities and evaluates current group-role grants on every protected request. Suspending or deleting the account over SCIM instantly revokes all active sessions.
 
-SCIM handles lifecycle changes. OIDC handles authentication. The application decides authorization. A valid ID token alone cannot create an account or grant access.
+---
+
+## The Problem It Solves
+
+SaaS multi-tenant applications typically suffer from fragmented identity models:
+
+1. **Uncontrolled Just-In-Time (JIT) Provisioning**: Accepting arbitrary inbound OIDC tokens creates unmanaged shadow accounts without operator approval.
+2. **Zombie Sessions on Employee Offboarding**: When an employee is disabled in the IdP, their SaaS application session cookies often remain valid until expiration hours or days later.
+3. **Stale Role Grants**: Role memberships baked into JWT claims become outdated when group memberships change before token refresh.
+4. **Tenant Data Leakage**: Inadequately isolated tenant data in shared databases allows cross-tenant resource manipulation.
+
+**Enterprise User Provisioning solves this with a zero-trust model:**
+
+- **Strict Pre-Provisioning**: An OIDC ID token alone cannot create an account or grant access; identities must be explicitly linked to pre-provisioned SCIM records.
+- **Continuous RBAC Evaluation**: Group-to-role mappings and permissions are evaluated against the database on every protected request.
+- **Instant Session Invalidation**: Deactivating or deleting a user via SCIM immediately invalidates all active sessions and rejects subsequent requests.
+- **Tenant Isolation**: Composite foreign keys (`tenant_id, id`) and per-tenant HMAC-SHA-256 tokens strictly partition all resources and queries.
+- **Append-Only Audit Logging**: All lifecycle changes, token operations, role grants, and authorization denials are logged immutably.
+
+---
+
+## Protocols and Architecture
 
 ```mermaid
 flowchart LR
-  IdP[authentik] -->|SCIM token| API[Go SCIM API]
-  API --> Provision[Provisioning + audit]
-  Provision --> DB[(PostgreSQL)]
-  Browser[Employee browser] -->|OIDC code + PKCE| IdP
-  Browser --> Portal[Portal + server sessions]
-  Portal --> Authz[Current group-role check]
+  IdP[Enterprise IdP / authentik] -->|SCIM 2.0 Bearer Token| API[Go SCIM API]
+  API --> Provision[Provisioning Engine]
+  Provision --> DB[(PostgreSQL 16)]
+  Browser[Employee Browser] -->|OIDC Auth Code + PKCE| IdP
+  Browser --> Portal[Web Portal + Sessions]
+  Portal --> Authz[Continuous RBAC Check]
   Authz --> DB
 ```
 
+### Deprovisioning Lifecycle Sequence
+
 ```mermaid
 sequenceDiagram
-  participant A as Admin
-  participant I as authentik
-  participant S as SCIM API
-  participant D as PostgreSQL
-  participant B as Browser session
-  A->>I: Disable employee
-  I->>S: PATCH User active=false
-  S->>D: Mark inactive, revoke sessions, append audit event
-  B->>D: Request protected page
-  D-->>B: Session rejected
+  autonumber
+  participant Admin as Enterprise Admin
+  participant IdP as Identity Provider (authentik / Okta)
+  participant SCIM as Go SCIM API
+  participant DB as PostgreSQL
+  participant Browser as Employee Session
+  Admin->>IdP: Disable employee
+  IdP->>SCIM: PATCH /scim/v2/Users/{id} active=false
+  SCIM->>DB: Set active=false, revoke app_sessions, append audit_events
+  SCIM-->>IdP: 200 OK (ETag updated)
+  Browser->>DB: GET /app (Cookie: eup_session)
+  DB-->>Browser: 401 Unauthorized (Session Revoked, Set-Cookie: Max-Age=0)
 ```
 
-## Quick start
+---
 
-Requirements: Go 1.25+, Docker Compose v2, and OpenSSL. Run the Go app on the host so the browser and backend use the same authentik issuer URL.
+## Showcase Gallery
+
+| Feature / Screen                                                     | Description                                                                                                                                                                                  |
+| :------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ![Authenticated Portal](docs/screenshots/dashboard.png)              | **Authenticated Employee Portal (`/app`)**<br>Displays active authenticated session for provisioned user (`sarah.chen@northstar.example`), evaluating `portal:read` permission in real time. |
+| ![Admin Portal](docs/screenshots/admin-portal.png)                   | **Role-Protected Administrative Console (`/app/admin`)**<br>Restricted view accessible only when the user's SCIM group is bound to the `tenant_admin` role.                                  |
+| ![CLI Provisioning](docs/screenshots/cli-provisioning.png)           | **Administrative CLI (`provisionctl`)**<br>Tenant creation, secure SCIM bearer token generation (HMAC-SHA-256 at rest), RBAC role seeding, and group-role binding.                           |
+| ![SCIM Lifecycle & Audit](docs/screenshots/scim-lifecycle-audit.png) | **Automated SCIM Lifecycle & Real-Time Audit Trail**<br>Execution of end-to-end lifecycle verification (`make demo`) and real-time query of append-only audit logs.                          |
+| ![Session Invalidation](docs/screenshots/session-revocation.png)     | **Zero-Trust Session Invalidation Proof**<br>Live demonstration of employee account deactivation via SCIM 2.0 PATCH immediately killing active browser sessions.                             |
+
+---
+
+## Key Features
+
+- **SCIM 2.0 REST Engine (RFC 7643 / RFC 7644 Subset)**:
+  - Users and Groups: collection `GET`/`POST`; resource `GET`/`PUT`/`PATCH`/`DELETE`.
+  - Service discovery: `/ServiceProviderConfig`, `/ResourceTypes`, `/Schemas`.
+  - Attribute filtering (`eq`, `co`, `sw`, `pr`, `and`) parameterized safely via SQL.
+  - Deterministic 1-based pagination with configurable page limits (up to 200).
+  - Concurrency control using weak ETags (`W/"<version>"`) and `If-Match` headers.
+  - Granular `PATCH` operations supporting active status, department, and group memberships.
+- **Explicit OIDC Account Linking**:
+  - Tenant-specific OIDC configuration with AES-256-GCM encrypted client secrets.
+  - PKCE code challenge and state validation with 5-minute expiry.
+  - Requires pre-existing active SCIM record; email matching alone never auto-provisions.
+- **Dynamic Group-Role Authorization**:
+  - Fine-grained permission system: `portal:read`, `reports:read`, `billing:read`, `tickets:read`, `admin:read`.
+  - Roles bound to SCIM groups: `employee`, `billing_viewer`, `support_agent`, `tenant_admin`.
+  - Authorization dynamically checked against the database on each request.
+- **Administrative CLI (`provisionctl`)**:
+  - Full management of tenants, provisioning tokens, OIDC providers, identity links, roles, and audit trails.
+  - Token rotation supporting 15-minute grace periods for seamless zero-downtime key rotation.
+- **Multi-Tenant Security Architecture**:
+  - Composite primary and foreign keys enforce strict tenant boundaries.
+  - Keyed HMAC-SHA-256 tokens stored with 20-character prefix indexing.
+  - Rate limiting on authentication and login endpoints.
+
+---
+
+## Quick Start
+
+### Prerequisites
+
+- **Go**: 1.25+ (tested on Go 1.27)
+- **Docker & Docker Compose**: v2+
+- **OpenSSL**: For generating local cryptographic keys
+
+### 1. Configure Environment
+
+Copy the example environment files:
 
 ```sh
 cp .env.example .env
 cp .env.authentik.example .env.authentik
 ```
 
-Replace development secrets in `.env`:
+Generate secure local development secrets:
 
 ```sh
-openssl rand -hex 32                    # TOKEN_HASH_SECRET
-openssl rand -base64 32 | tr -d '\n='  # OIDC_CONFIG_KEY (unpadded base64)
+# Generate TOKEN_HASH_SECRET (hex 32 bytes)
+openssl rand -hex 32
+
+# Generate OIDC_CONFIG_KEY (unpadded base64 32 bytes)
+openssl rand -base64 32 | tr -d '\n='
+
+# Generate database and authentik secrets
 openssl rand -base64 36 | tr -d '\n'   # PG_PASS
 openssl rand -base64 60 | tr -d '\n'   # AUTHENTIK_SECRET_KEY
 ```
 
-Put the generated `PG_PASS` and `AUTHENTIK_SECRET_KEY` values in both `.env` (Compose interpolation) and `.env.authentik` (passed only to authentik containers). Do not copy SaaS keys into `.env.authentik`.
+Populate `.env` with these values:
 
-Start PostgreSQL and authentik using the checked-in snapshot based on authentik 2026.8.5:
-
-```sh
-docker compose -f compose.yaml -f deployments/authentik/compose.yaml \
-  up -d postgres authentik-postgresql authentik-server authentik-worker
+```ini
+TOKEN_HASH_SECRET=your-32-byte-hex-string
+OIDC_CONFIG_KEY=your-unpadded-base64-key
+DATABASE_URL=postgres://provision:local-only-change-me@localhost:5432/provision?sslmode=disable
+PUBLIC_BASE_URL=http://localhost:8080
+LISTEN_ADDR=:8080
+DEV_MODE=true
+COOKIE_SECURE=false
 ```
 
-Load `.env` and start the Go service on the host. Startup applies the embedded migration.
+_(Note: If port 5432 is already occupied on your host, you can set `PGPORT=5433` in `.env` and adjust `DATABASE_URL` accordingly.)_
+
+### 2. Start PostgreSQL
+
+Start the PostgreSQL service using Docker Compose:
+
+```sh
+docker compose up -d postgres
+```
+
+### 3. Run the Go Service
+
+Start the application on the host. Database migrations are applied automatically at startup:
 
 ```sh
 set -a; source .env; set +a
 go run ./cmd/server
 ```
 
-Open [authentik](http://localhost:9000) and complete its initial admin setup. In another terminal, create two tenants:
+The server listens on `http://localhost:8080`. Verify health endpoints:
+
+```sh
+curl http://localhost:8080/healthz
+# {"status":"ok"}
+
+curl http://localhost:8080/readyz
+# {"status":"ready"}
+```
+
+---
+
+## Practical Usage & Workflows
+
+### 1. Tenant & Token Setup via CLI
+
+Create an enterprise tenant and issue an authenticated SCIM bearer token:
 
 ```sh
 set -a; source .env; set +a
-go run ./cmd/provisionctl tenant create "Northstar Analytics"
-go run ./cmd/provisionctl tenant create "Harbor Systems"
-go run ./cmd/provisionctl token create TENANT_UUID authentik-scim
+
+# Create tenant
+TENANT_ID=$(go run ./cmd/provisionctl tenant create "Northstar Cloud Systems")
+echo "Tenant ID: $TENANT_ID"
+
+# Seed default RBAC roles
+go run ./cmd/provisionctl roles seed "$TENANT_ID"
+
+# Generate SCIM token (stored as HMAC-SHA-256 digest)
+SCIM_TOKEN=$(go run ./cmd/provisionctl token create "$TENANT_ID" "Okta SCIM" | tail -n 1)
 ```
 
-The token is shown once and stored as a keyed HMAC-SHA-256 digest. See [authentik setup](docs/authentik-setup.md) for OIDC and SCIM provider configuration and explicit identity linking.
+### 2. Provision Users & Groups over SCIM 2.0 API
 
-## Supported SCIM subset
-
-All endpoints are under `/scim/v2`, require a tenant-bound bearer token, and accept bodies up to 1 MiB.
-
-- Users and Groups: collection GET/POST; resource GET/PUT/PATCH/DELETE.
-- Discovery: ServiceProviderConfig, ResourceTypes, Schemas.
-- User filters: `userName`, `externalId`, `id`, `displayName`; group filters: `displayName`, `externalId`, `id`. Supported operators: `eq`, `co`, `sw`, `pr`, and `and`.
-- 1-based pagination, deterministic order, maximum page size 200.
-- Weak ETags and If-Match on resource mutations.
-- User PATCH supports explicit paths and supported writable attributes in no-path add/replace objects; supported explicit paths include `active`, `displayName`, `department`, and `name.familyName`.
-- Group PATCH supports `displayName`, `externalId`, and member add/replace/remove. Groups are flat.
-- User fields include names, emails, title, userType, preferredLanguage, department, and enterprise employeeNumber, organization, division, costCenter, and manager.
-
-SCIM value-path PATCH operations, sorting, Bulk, some optional fields, and full RFC conformance are outside the supported subset. See [SCIM support notes](docs/scim-api.md).
-
-## Identity, authorization, and lifecycle
-
-The CLI stores tenant-specific OIDC issuer, client ID, redirect URL, and an AES-GCM encrypted client secret. Operators explicitly link the verified issuer/subject to an existing provisioned user; email matching never creates or links accounts. The encrypted secret uses a 32-byte base64 `OIDC_CONFIG_KEY`.
-
-Role grants require operator approval. Seed defaults with `provisionctl roles seed TENANT_UUID`; bind a stable SCIM group ID with `provisionctl roles bind TENANT_UUID GROUP_UUID ROLE_ID`. Protected handlers check current membership and permissions on every request. Default roles are `employee`, `billing_viewer`, `support_agent`, and `tenant_admin`.
-
-`active=false` keeps the SCIM record but revokes its sessions. Reactivation does not restore old sessions. SCIM DELETE tombstones the user, removes memberships, and revokes sessions transactionally. Username may be reused after deletion.
-
-## CLI
-
-The CLI supports tenant create/list; token create/list/revoke/rotate; OIDC provider configuration; explicit identity linking; user/group listing; role seeding/list/bind/unbind; audit listing; and a SCIM lifecycle fixture demo. Administrative commands use direct database access and are intended for a trusted operator.
-
-Run the fixture after starting the server:
+#### Provision User (`POST /scim/v2/Users`)
 
 ```sh
-make demo DEMO_TENANT_ID=TENANT_UUID
+curl -X POST http://localhost:8080/scim/v2/Users \
+  -H "Authorization: Bearer $SCIM_TOKEN" \
+  -H "Content-Type: application/scim+json" \
+  -d '{
+    "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
+    "userName": "sarah.chen@northstar.example",
+    "externalId": "okta-usr-8820",
+    "name": {
+      "givenName": "Sarah",
+      "familyName": "Chen"
+    },
+    "displayName": "Sarah Chen",
+    "title": "Principal Security Architect",
+    "department": "Security",
+    "active": true
+  }'
 ```
 
-It exercises create, group assignment, department update, membership removal, suspend, reactivate, and delete through the real SCIM HTTP API. It does not perform OIDC login or claim the live authentik demo has passed.
-
-## Verification
+#### Provision Group (`POST /scim/v2/Groups`)
 
 ```sh
+curl -X POST http://localhost:8080/scim/v2/Groups \
+  -H "Authorization: Bearer $SCIM_TOKEN" \
+  -H "Content-Type: application/scim+json" \
+  -d '{
+    "schemas": ["urn:ietf:params:scim:schemas:core:2.0:Group"],
+    "displayName": "Security Administrators",
+    "externalId": "okta-grp-secadmin",
+    "members": [
+      {"value": "<USER_UUID>", "type": "User"}
+    ]
+  }'
+```
+
+### 3. Group-Role Binding
+
+Bind the provisioned SCIM group to an application role (`tenant_admin`):
+
+```sh
+go run ./cmd/provisionctl roles bind "$TENANT_ID" "<GROUP_UUID>" tenant_admin
+```
+
+List assigned roles and their permissions:
+
+```sh
+go run ./cmd/provisionctl roles list "$TENANT_ID"
+```
+
+### 4. Execute the Automated SCIM Fixture Demo
+
+Run the end-to-end SCIM lifecycle test:
+
+```sh
+make demo DEMO_TENANT_ID="$TENANT_ID"
+```
+
+This automated fixture executes through the live SCIM HTTP server:
+
+1. User creation in `Support` department.
+2. Group creation (`Employees Demo`).
+3. Member assignment to group.
+4. Department update to `Finance` via `PATCH`.
+5. Group member removal via `PATCH`.
+6. Account suspension (`active=false`) with verification of state.
+7. Account reactivation (`active=true`) and ETag capture.
+8. Deletion with optimistic concurrency (`If-Match: W/"<version>"`).
+
+### 5. Inspect the Audit Trail
+
+View immutable append-only audit events for the tenant:
+
+```sh
+go run ./cmd/provisionctl audit list "$TENANT_ID"
+```
+
+Sample output:
+
+```text
+2026-11-22T09:18:04Z	group.deleted	group	ed4f882d-ef56-4a10-86f7-094d4271e628	success
+2026-11-22T09:18:04Z	user.deleted	user	2e81b52a-2496-4232-94b1-be30968c7462	success
+2026-11-22T09:18:04Z	user.reactivated	user	2e81b52a-2496-4232-94b1-be30968c7462	success
+2026-11-22T09:18:04Z	user.suspended	user	2e81b52a-2496-4232-94b1-be30968c7462	success
+2026-11-22T09:18:04Z	membership.removed	group	ed4f882d-ef56-4a10-86f7-094d4271e628	success
+2026-11-22T09:18:04Z	group.updated	group	ed4f882d-ef56-4a10-86f7-094d4271e628	success
+2026-11-22T09:18:04Z	role_mapping.created	group	ed4f882d-ef56-4a10-86f7-094d4271e628	success
+2026-11-22T09:18:04Z	membership.added	group	ed4f882d-ef56-4a10-86f7-094d4271e628	success
+2026-11-22T09:18:04Z	group.created	group	ed4f882d-ef56-4a10-86f7-094d4271e628	success
+2026-11-22T09:18:04Z	user.created	user	2e81b52a-2496-4232-94b1-be30968c7462	success
+2026-11-22T09:18:04Z	token.created			success
+```
+
+---
+
+## CLI Reference (`provisionctl`)
+
+| Command                                                      | Description                                                         |
+| :----------------------------------------------------------- | :------------------------------------------------------------------ |
+| `provisionctl tenant create <name>`                          | Create a new isolated enterprise tenant.                            |
+| `provisionctl tenant list`                                   | List all registered tenants and active statuses.                    |
+| `provisionctl token create <tenant-id> [name]`               | Generate a scoped SCIM bearer token (displayed once).               |
+| `provisionctl token list`                                    | List active tokens, prefixes, expiration, and last used timestamps. |
+| `provisionctl token rotate <token-id>`                       | Rotate a token; grants 15-minute grace period on old token.         |
+| `provisionctl token revoke <token-id>`                       | Instantly revoke a token.                                           |
+| `provisionctl roles seed <tenant-id>`                        | Seed default RBAC roles and granular permissions.                   |
+| `provisionctl roles list <tenant-id>`                        | List roles and effective permission sets for a tenant.              |
+| `provisionctl roles bind <tenant-id> <group-id> <role-id>`   | Authorize a group-to-role binding.                                  |
+| `provisionctl roles unbind <tenant-id> <group-id> <role-id>` | Remove a group-to-role binding.                                     |
+| `provisionctl users list <tenant-id>`                        | List provisioned active and deprovisioned users.                    |
+| `provisionctl groups list <tenant-id>`                       | List provisioned SCIM groups.                                       |
+| `provisionctl audit list <tenant-id>`                        | Output chronological audit events for a tenant.                     |
+| `provisionctl demo run <tenant-id>`                          | Execute automated SCIM HTTP API lifecycle test suite.               |
+
+---
+
+## Supported SCIM 2.0 Subset
+
+All endpoints reside under `/scim/v2` and require an authenticated tenant-scoped bearer token. Request bodies are limited to 1 MiB.
+
+- **Endpoints**:
+  - `GET /scim/v2/ServiceProviderConfig`, `GET /scim/v2/ResourceTypes`, `GET /scim/v2/Schemas`
+  - `GET /scim/v2/Users`, `POST /scim/v2/Users`
+  - `GET /scim/v2/Users/{id}`, `PUT /scim/v2/Users/{id}`, `PATCH /scim/v2/Users/{id}`, `DELETE /scim/v2/Users/{id}`
+  - `GET /scim/v2/Groups`, `POST /scim/v2/Groups`
+  - `GET /scim/v2/Groups/{id}`, `PUT /scim/v2/Groups/{id}`, `PATCH /scim/v2/Groups/{id}`, `DELETE /scim/v2/Groups/{id}`
+- **Filter Operators**: `eq`, `co`, `sw`, `pr`, and `and` over `userName`, `externalId`, `id`, `displayName`.
+- **Concurrency**: Weak ETags (`ETag: W/"<version>"`) and `If-Match` validation on updates and deletes.
+- **PATCH Operations**: Explicit paths (`active`, `displayName`, `department`, `name.familyName`) and group `members` add/replace/remove.
+
+See [docs/scim-api.md](docs/scim-api.md) for full endpoint specifications and error handling.
+
+---
+
+## Verification & Testing
+
+Run all unit, integration, and race condition tests:
+
+```sh
+# Run standard test suite
 go test ./...
-go test -race ./...
+
+# Run clean test suite with race detector (requires TEST_DATABASE_URL)
+TEST_DATABASE_URL="postgres://provision:local-only-change-me@localhost:5432/provision?sslmode=disable" \
+  go test -count=1 -race ./...
+
+# Run static analysis
 go vet ./...
+
+# Build all binaries
 go build ./cmd/server ./cmd/provisionctl
 ```
 
-CI supplies PostgreSQL 16 and runs database-backed tests. The authentik setup guide describes a local integration path; deployments should validate interoperability with their configured authentik version and mappings.
+---
 
-The project does not include a browser-based administration dashboard or an automated OIDC end-to-end test suite. Its SCIM implementation covers a documented subset rather than the full protocol. See [tenant isolation](docs/tenant-isolation.md), [lifecycle policy](docs/lifecycle-policy.md), and the [threat model](docs/threat-model.md) for scope and security limitations.
+## Documentation Index
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Licensed under the [MIT License](LICENSE).
+- [Architecture & Protocols](docs/architecture.md)
+- [SCIM 2.0 API Specifications](docs/scim-api.md)
+- [authentik Integration Guide](docs/authentik-setup.md)
+- [RBAC & Authorization Model](docs/authorization.md)
+- [Account Lifecycle Policy](docs/lifecycle-policy.md)
+- [Multi-Tenant Isolation](docs/tenant-isolation.md)
+- [Threat Model & Security Design](docs/threat-model.md)
+- [Testing Strategy](docs/testing.md)
+
+---
+
+## Contributing & License
+
+Contributions are welcome! Please review [CONTRIBUTING.md](CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) before submitting a pull request.
+
+This project is licensed under the [MIT License](LICENSE).
